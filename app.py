@@ -74,7 +74,6 @@ def analyze_clause_types(doc):
 
 def calculate_vocab_depth(doc):
     """估算詞彙深度：判斷句子中是否包含超出基礎生活用詞的高層次學科術語/抽象詞"""
-    # 這裡建立台灣中小學常見的高階學科/抽象術語特徵庫（模擬教育部進階字庫權重）
     advanced_terms = {
         "演算法", "同溫層", "合力", "敘事觀點", "社會文化脈絡", "供給", "需求",
         "蒸發", "凝結", "光合作用", "分裂", "細胞", "生物體", "公義", "政治結構",
@@ -120,66 +119,47 @@ def calculate_features(text, nlp_model):
     }
 
 def predict_grade(features, ml_model):
-    """根據 ML 模型預測；若無模型則使用「多維度難度積分權重系統」"""
+    """結合 ML 基準模型與規則引擎的混合校正機制"""
+    base_grade = 3  # 預設為中年級
+    
+    # 1. 嘗試由模型取得初始年級數值
     if ml_model is not None:
-        df_features = pd.DataFrame([{
-            "char_count": features["char_count"],
-            "word_count": features["word_count"],
-            "noun_ratio": features["noun_ratio"],
-            "verb_ratio": features["verb_ratio"],
-            "mdd": features["mdd"]
-        }])
         try:
-            return ml_model.predict(df_features)[0]
+            df_features = pd.DataFrame([{
+                "char_count": features["char_count"],
+                "word_count": features["word_count"],
+                "noun_ratio": features["noun_ratio"],
+                "verb_ratio": features["verb_ratio"],
+                "mdd": features["mdd"]
+            }])
+            raw_pred = ml_model.predict(df_features)[0]
+            # 若模型輸出為整數型態，保留其基準；否則以 3 為基礎
+            if isinstance(raw_pred, (int, float)):
+                base_grade = int(raw_pred)
         except Exception:
             pass
 
-    # --- 升級版：台灣試題多維度難度積分權重系統 ---
-    score = 0
+    # 2. 進行特徵權重動態校正 (根據台灣語境加減級數)
+    adjustment = 0
     
-    # 1. 字數長度評分
-    if features["char_count"] >= 50:
-        score += 3
-    elif features["char_count"] >= 30:
-        score += 2
-    elif features["char_count"] >= 18:
-        score += 1
-
-    # 2. 語法複雜度 (MDD) 評分
-    if features["mdd"] >= 2.4:
-        score += 3
-    elif features["mdd"] >= 1.9:
-        score += 2
-    elif features["mdd"] >= 1.4:
-        score += 1
-
-    # 3. 專業名詞密度 (Noun Ratio) 評分 - 理科與社會科關鍵特徵
-    if features["noun_ratio"] >= 0.35:
-        score += 3
-    elif features["noun_ratio"] >= 0.25:
-        score += 2
-    elif features["noun_ratio"] >= 0.18:
-        score += 1
-
-    # 4. 句式深度與連接詞加權
-    if "進階論述句" in features["clause_types"]:
-        score += 3
-    elif any(c in features["clause_types"] for c in ["假設", "條件", "轉折", "因果"]):
-        score += 1
+    # 低年級下修條件：字少 + 語法簡單 + 簡單句
+    if features["char_count"] <= 20 and features["mdd"] < 2.5 and features["noun_ratio"] < 0.20:
+        adjustment -= 2
         
-    # 5. 學科高級抽象術語深度額外加成
-    if features["vocab_depth"] >= 2:
-        score += 3
-    elif features["vocab_depth"] == 1:
-        score += 1
-        
-    # --- 根據總積分分級 ---
-    if score >= 7:
+    # 高年級上修條件：高深連詞 OR 專業抽象詞匯 >= 2 OR (長字數 + 高 MDD)
+    if "進階論述句" in features["clause_types"] or features["vocab_depth"] >= 2:
+        adjustment += 2
+    elif features["char_count"] >= 35 and features["noun_ratio"] >= 0.35:
+        adjustment += 2
+
+    # 3. 輸出最終適用年級
+    final_grade = base_grade + adjustment
+    if final_grade >= 5:
         return "5-6 年級 (高年級)"
-    elif score >= 3:
-        return "3-4 年級 (中年級)"
-    else:
+    elif final_grade <= 2:
         return "1-2 年級 (低年級)"
+    else:
+        return "3-4 年級 (中年級)"
 
 def run_batch_analysis(question_list, nlp_model, difficulty_model):
     """批次執行運算並輸出 DataFrame 報告"""
@@ -208,7 +188,7 @@ with st.sidebar:
     
     model = load_difficulty_model()
     if model is not None:
-        st.success("✅ 已成功載入 mdd_baseline_model.pkl")
+        st.success("✅ 已成功載入 mdd_baseline_model.pkl (已啟用語境校正)")
     else:
         st.warning("⚠️ 未找到 mdd_baseline_model.pkl，使用台灣試題進階評分引擎。")
         
@@ -306,7 +286,6 @@ with tab2:
         )
         
         if st.button("⚡ 開始批次分析 (文字)", type="primary", key="btn_batch_text"):
-            # 將貼上的文字以換行符號切開，並自動去除空白與空行
             q_list = [line.strip() for line in batch_text.split("\n") if line.strip()]
             
             if not q_list:
