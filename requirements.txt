@@ -3,3 +3,4 @@ spacy>=3.7
 pandas>=2.2
 joblib>=1.4
 scikit-learn>=1.5
+https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl
