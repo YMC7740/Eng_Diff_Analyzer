@@ -34,7 +34,7 @@ def load_nlp_model():
         return None
     try:
         return spacy.load("zh_core_web_sm")
-    except OSError:
+    except Exception:
         return None
 
 
