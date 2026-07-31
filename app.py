@@ -8,7 +8,7 @@ import streamlit as st
 # 1. 頁面基本設定
 # ==========================================
 st.set_page_config(
-    page_title="台灣中小學試題句子難度檢測系統",
+    page_title="台灣中小學試題句子難度檢測系統（測試版）",
     page_icon="📚",
     layout="wide"
 )
