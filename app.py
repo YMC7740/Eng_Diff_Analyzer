@@ -38,13 +38,12 @@ def load_difficulty_model():
 # ==========================================
 def analyze_clause_types(doc):
     """分析複句結構與句式類型"""
-    # 台灣國小常見複句連接詞特徵庫
     connectors = {
         "因果複句": ["因為", "所以", "因此", "由於", "導致", "以致於"],
-        "轉折複句": ["雖然", "但是", "不過", "然而", "卻", "可是"],
-        "假設複句": ["如果", "要是", "假如", "假使", "若是", "的話"],
-        "條件複句": ["只要", "只有", "除非", "無論", "不管", "都"],
-        "並列複句": ["同時", "一方面", "以及", "既...又", "也"]
+        "轉折複句": ["雖然", "但是", "不過", "然而", "卻", "可是", "即使", "仍"],
+        "假設複句": ["如果", "要是", "假如", "假使", "若是", "的話", "若"],
+        "條件複句": ["只要", "只有", "除非", "無論", "不管", "都", "當...時", "除了...也"],
+        "並列複句": ["同時", "一方面", "以及", "既...又", "也", "並且"]
     }
     
     text = doc.text
@@ -54,7 +53,6 @@ def analyze_clause_types(doc):
         if any(kw in text for kw in keywords):
             detected_types.append(clause_type)
             
-    # 如果找不到連接詞，利用依存句法分析是否有複雜的狀語從句
     if not detected_types:
         dep_labels = [token.dep_ for token in doc]
         if "advcl" in dep_labels or "conj" in dep_labels:
@@ -68,25 +66,21 @@ def calculate_features(text, nlp_model):
     """計算題目的文本與語法特徵 (含 MDD 與 複句分析)"""
     doc = nlp_model(text)
     
-    # 基本特徵
     char_count = len(text)
     word_count = len(doc)
     
-    # 詞性比率統計
     nouns = [token for token in doc if token.pos_ in ("NOUN", "PROPN")]
     verbs = [token for token in doc if token.pos_ == "VERB"]
     noun_ratio = len(nouns) / word_count if word_count > 0 else 0.0
     verb_ratio = len(verbs) / word_count if word_count > 0 else 0.0
     
-    # MDD (Mean Dependency Distance - 平均依存距離)
     dep_distances = [
         abs(token.i - token.head.i) 
         for token in doc 
-        if token.head != token  # 排除 ROOT 本身
+        if token.head != token
     ]
     mdd = sum(dep_distances) / len(dep_distances) if dep_distances else 0.0
     
-    # 複句結構分析
     clause_types = analyze_clause_types(doc)
     
     return {
@@ -113,7 +107,7 @@ def predict_grade(features, ml_model):
         except Exception:
             pass
 
-    # --- 備用規則引擎 (增強版：結合 MDD 與複句類型) ---
+    # --- 備用規則引擎 ---
     if features["char_count"] <= 25 and features["mdd"] < 1.8 and features["clause_types"] == "簡單句":
         return "1-2 年級 (低年級)"
     elif features["char_count"] >= 55 or features["mdd"] >= 2.4 or any(c in features["clause_types"] for c in ["假設", "條件", "因果"]):
@@ -121,10 +115,25 @@ def predict_grade(features, ml_model):
     else:
         return "3-4 年級 (中年級)"
 
+def run_batch_analysis(question_list, nlp_model, difficulty_model):
+    """批次執行運算並輸出 DataFrame 報告"""
+    results = []
+    for q_text in question_list:
+        feat = calculate_features(q_text, nlp_model)
+        grade = predict_grade(feat, difficulty_model)
+        
+        results.append({
+            "題目內容": q_text,
+            "預估適用年級": grade,
+            "複句結構與句式": feat["clause_types"],
+            "總字數": feat["char_count"],
+            "MDD數值": round(feat["mdd"], 2)
+        })
+    return pd.DataFrame(results)
+
 # ==========================================
 # 4. 前端介面與互動
 # ==========================================
-# 側邊欄狀態
 with st.sidebar:
     st.header("⚙️ 系統狀態")
     nlp = load_nlp()
@@ -141,12 +150,11 @@ with st.sidebar:
     subject = st.selectbox("學科", ["國語文", "數學", "社會", "自然"])
     show_table = st.checkbox("顯示特徵明細表", value=True)
 
-# 主畫面主標題
 st.title("📚 台灣中小學試題句子難度檢測系統")
-st.caption("支援單題檢測、句式特徵解析，以及 CSV/Excel 題庫批次上傳分析。")
+st.caption("支援單題檢測、句式特徵解析，以及多題文字貼上／檔案上傳的批次檢測。")
 
-# 使用分頁區隔「單題檢測」與「批次查詢」
-tab1, tab2 = st.tabs(["✍️ 單題檢測與複句分析", "📂 批次題庫上傳檢測"])
+# 使用分頁區隔
+tab1, tab2 = st.tabs(["✍️ 單題檢測與複句分析", "📋 批次多題文字與題庫檢測"])
 
 # --- TAB 1: 單題檢測 ---
 with tab1:
@@ -156,7 +164,7 @@ with tab1:
         placeholder="請將試題文字貼在這裡...（例如：因為果園裡的蘋果成熟了，所以小明去摘了15顆。）"
     )
 
-    if st.button("🚀 開始檢測單題", type="primary"):
+    if st.button("🚀 開始檢測單題", type="primary", key="btn_single"):
         if not question_text.strip():
             st.error("請先輸入或貼上題目文字喔！")
         else:
@@ -190,59 +198,76 @@ with tab1:
                     })
                     st.table(detail_df)
 
-# --- TAB 2: 批次查詢 ---
+# --- TAB 2: 批次查詢 (支援直接貼上文字 & 上傳檔案) ---
 with tab2:
-    st.markdown("### 批次檢測 Excel / CSV 檔案")
-    st.info("請確保上傳的檔案中，包含一個標題名稱為 **「題目」** 或 **「question」** 的欄位。")
+    st.markdown("### 批次多題檢測")
+    st.caption("請依照習慣選擇 **「直接貼上多行文字」** 或 **「上傳 CSV / Excel 試算表」**：")
     
-    uploaded_file = st.file_uploader("請選擇 CSV 或 Excel 檔案", type=["csv", "xlsx"])
+    batch_mode = st.radio("請選擇輸入方式：", ["📋 貼上多行題目文字", "📂 上傳 CSV / Excel 檔案"], horizontal=True)
     
-    if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith(".csv"):
-                df = pd.read_csv(uploaded_file)
-            else:
-                df = pd.read_excel(uploaded_file)
-                
-            # 尋找文字欄位
-            text_col = None
-            for col in df.columns:
-                if col in ["題目", "question", "Text", "試題", "內容"]:
-                    text_col = col
-                    break
+    if batch_mode == "📋 貼上多行題目文字":
+        default_sample = (
+            "小明每天早上七點起床，吃完早餐後去上學。\n"
+            "如果植物沒有足夠的陽光和水分，就可能無法健康生長。\n"
+            "雖然今天很熱，但是大家還是認真完成體育課的活動。\n"
+            "即使科技能提升資訊傳播效率，演算法所形成的同溫層仍可能限制人們接觸多元觀點的機會。"
+        )
+        batch_text = st.text_area(
+            "請貼上多個題目（每行一題，空行會自動忽略）：",
+            value=default_sample,
+            height=200
+        )
+        
+        if st.button("⚡ 開始批次分析 (文字)", type="primary", key="btn_batch_text"):
+            # 將貼上的文字以換行符號切開，並自動去除空白與空行
+            q_list = [line.strip() for line in batch_text.split("\n") if line.strip()]
             
-            if not text_col:
-                st.error("❌ 找不到有效的題目欄位！請確認表格有「題目」或「question」的標題欄位。")
+            if not q_list:
+                st.error("請至少貼上一題有效的題目內容喔！")
             else:
-                st.write(f"成功載入 `{len(df)}` 筆試題，即將為欄位 `[{text_col}]` 進行分析：")
-                
-                if st.button("⚡ 開始批次分析", type="primary"):
-                    results = []
-                    with st.spinner("正在逐題批次檢測..."):
-                        for idx, row in df.iterrows():
-                            q_text = str(row[text_col])
-                            feat = calculate_features(q_text, nlp)
-                            grade = predict_grade(feat, model)
-                            
-                            results.append({
-                                "原始題目": q_text,
-                                "預估適用年級": grade,
-                                "複句結構": feat["clause_types"],
-                                "總字數": feat["char_count"],
-                                "MDD數值": round(feat["mdd"], 2)
-                            })
-                            
-                    res_df = pd.DataFrame(results)
-                    st.success("🎉 批次分析完成！結果如下：")
+                with st.spinner(f"正在分析共 {len(q_list)} 筆試題..."):
+                    res_df = run_batch_analysis(q_list, nlp, model)
+                    st.success(f"🎉 已完成 {len(q_list)} 題批次檢測！分析結果如下：")
                     st.dataframe(res_df, use_container_width=True)
                     
-                    # 下載結果
-                    csv_data = res_df.to_csv(index=False).encode('utf-8-sig')
+                    csv_data = res_df.to_csv(index=False).encode("utf-8-sig")
                     st.download_button(
-                        label="📥 下載完整檢測結果 (CSV)",
+                        label="📥 下載分析報告 (CSV)",
                         data=csv_data,
-                        file_name="試題檢測分析結果.csv",
+                        file_name="文字批次試題檢測報告.csv",
                         mime="text/csv"
                     )
-        except Exception as e:
-            st.error(f"檔案讀取失敗，詳細錯誤：{e}")
+                    
+    else:
+        st.info("請確保上傳的檔案中，包含一個標題名稱為 **「題目」** 或 **「question」** 的欄位。")
+        uploaded_file = st.file_uploader("請選擇 CSV 或 Excel 檔案", type=["csv", "xlsx"])
+        
+        if uploaded_file is not None:
+            try:
+                if uploaded_file.name.endswith(".csv"):
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(uploaded_file)
+                    
+                text_col = next((col for col in df.columns if col in ["題目", "question", "Text", "試題", "內容"]), None)
+                
+                if not text_col:
+                    st.error("❌ 找不到有效的題目欄位！請確認表格有「題目」或「question」的標題欄位。")
+                else:
+                    st.write(f"成功載入 `{len(df)}` 筆試題，即將為欄位 `[{text_col}]` 進行分析：")
+                    if st.button("⚡ 開始批次分析 (檔案)", type="primary", key="btn_batch_file"):
+                        q_list = [str(text).strip() for text in df[text_col] if pd.notna(text) and str(text).strip()]
+                        with st.spinner("正在逐題批次檢測..."):
+                            res_df = run_batch_analysis(q_list, nlp, model)
+                            st.success("🎉 批次分析完成！結果如下：")
+                            st.dataframe(res_df, use_container_width=True)
+                            
+                            csv_data = res_df.to_csv(index=False).encode("utf-8-sig")
+                            st.download_button(
+                                label="📥 下載完整檢測結果 (CSV)",
+                                data=csv_data,
+                                file_name="檔案試題檢測結果.csv",
+                                mime="text/csv"
+                            )
+            except Exception as e:
+                st.error(f"檔案讀取失敗，詳細錯誤：{e}")
